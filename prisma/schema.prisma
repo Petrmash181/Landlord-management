@@ -1,0 +1,204 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------
+enum UnitStatus {
+  VACANT
+  OCCUPIED
+  MAINTENANCE
+}
+
+enum LeaseStatus {
+  PENDING
+  ACTIVE
+  TERMINATED
+  EXPIRED
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMode {
+  MPESA_STK
+  MPESA_C2B
+  BANK_TRANSFER
+  CASH
+  CHEQUE
+}
+
+enum MpesaTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+// ------------------------------------------------------
+// PROPERTY HIERARCHY
+// ------------------------------------------------------
+
+model Property {
+  id        String   @id @default(uuid())
+  name      String
+  location  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  buildings Building[]
+}
+
+model Building {
+  id         String   @id @default(uuid())
+  propertyId String
+  name       String // e.g., "Block A", "Main Tower"
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floors   Floor[]
+
+  @@index([propertyId])
+}
+
+model Floor {
+  id         String   @id @default(uuid())
+  buildingId String
+  number     Int // e.g., 0 for Ground, 1 for 1st Floor
+  name       String? // e.g., "Ground Floor"
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  units    Unit[]
+
+  @@index([buildingId])
+}
+
+model Unit {
+  id         String     @id @default(uuid())
+  floorId    String
+  unitNumber String // e.g., "A101", "Door 4B"
+  rentAmount Decimal    @db.Decimal(10, 2)
+  status     UnitStatus @default(VACANT)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  floor  Floor   @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  leases Lease[]
+
+  @@index([floorId])
+}
+
+// ------------------------------------------------------
+// TENANTS & LEASES
+// ------------------------------------------------------
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  email     String?  @unique
+  phone     String   @unique // Essential for M-Pesa & SMS
+  idNumber  String? // National ID or Passport
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leases   Lease[]
+  payments Payment[]
+}
+
+model Lease {
+  id            String      @id @default(uuid())
+  unitId        String
+  tenantId      String
+  startDate     DateTime
+  endDate       DateTime?
+  rentAmount    Decimal     @db.Decimal(10, 2)
+  depositAmount Decimal     @db.Decimal(10, 2)
+  status        LeaseStatus @default(ACTIVE)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  unit     Unit      @relation(fields: [unitId], references: [id])
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  invoices Invoice[]
+
+  @@index([unitId])
+  @@index([tenantId])
+}
+
+// ------------------------------------------------------
+// FINANCIALS & RECONCILIATION
+// ------------------------------------------------------
+
+model Invoice {
+  id          String        @id @default(uuid())
+  leaseId     String
+  invoiceNo   String        @unique // e.g., INV-2026-001
+  dueDate     DateTime
+  amountDue   Decimal       @db.Decimal(10, 2)
+  amountPaid  Decimal       @default(0.00) @db.Decimal(10, 2)
+  status      InvoiceStatus @default(UNPAID)
+  description String? // e.g., "Rent - October 2026"
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  lease    Lease     @relation(fields: [leaseId], references: [id])
+  payments Payment[]
+
+  @@index([leaseId])
+}
+
+model Payment {
+  id          String      @id @default(uuid())
+  invoiceId   String?
+  tenantId    String
+  amount      Decimal     @db.Decimal(10, 2)
+  paymentMode PaymentMode
+  reference   String      @unique // M-Pesa Receipt Code (e.g. QKH87123XX) or Cash Ref
+  paidAt      DateTime    @default(now())
+  createdAt   DateTime    @default(now())
+
+  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+  tenant  Tenant   @relation(fields: [tenantId], references: [id])
+
+  mpesaTransaction MpesaTransaction?
+
+  @@index([invoiceId])
+  @@index([tenantId])
+}
+
+// Raw log for Daraja Callback reconciliation before linking to Invoice/Payment
+model MpesaTransaction {
+  id                 String                 @id @default(uuid())
+  paymentId          String?                @unique
+  mpesaReceiptNumber String                 @unique
+  phoneNumber        String
+  amount             Decimal                @db.Decimal(10, 2)
+  accountReference   String // e.g., Unit Number entered during paybill
+  status             MpesaTransactionStatus @default(PENDING)
+  rawPayload         Json? // Full Callback payload from Safaricom
+  createdAt          DateTime               @default(now())
+
+  payment Payment? @relation(fields: [paymentId], references: [id])
+}
+
+// Log for Africa's Talking / SMS notifications
+model SmsLog {
+  id          String   @id @default(uuid())
+  recipient   String // Phone number
+  message     String
+  status      String // SENT, DELIVERED, FAILED
+  providerRef String? // ID returned by SMS gateway
+  createdAt   DateTime @default(now())
+}
